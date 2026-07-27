@@ -72,3 +72,27 @@ async def parse_csv(file: UploadFile = File(...)):
                 card_numbers.append(val)
 
     return {"cardNumbers": card_numbers, "totalFound": len(card_numbers)}
+
+class CardSearchRequest(BaseModel):
+    cardNumber: str
+    onePieceOnly: Optional[bool] = True
+
+@app.post("/api/search")
+@app.post("/search")
+def search_card_mock(req: CardSearchRequest):
+    # This is a mock endpoint to test the end-to-end frontend integration
+    # before we introduce the heavy TCGPlayer scraping logic.
+    mock_variant = {
+        "productId": 123456,
+        "productName": f"Mock Card for {req.cardNumber}",
+        "setName": "Mock Set",
+        "number": req.cardNumber,
+        "rarity": "SEC",
+        "marketPriceUSD": 45.99,
+        "recentSalesUSD": [45.00, 46.50, 44.99],
+        "averageRecentSalesUSD": 45.50,
+        "imageUrl": "https://tcgplayer-cdn.tcgplayer.com/product/123456_200w.jpg",
+        "productUrl": "https://www.tcgplayer.com/",
+        "isExactMatch": True
+    }
+    return {"cardNumber": req.cardNumber, "total": 1, "variants": [mock_variant]}
