@@ -16,13 +16,16 @@ import {
   X,
   SkipForward,
   Edit3,
-  RotateCcw
+  RotateCcw,
+  FileSpreadsheet,
+  Filter,
+  TrendingUp
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:8000/api";
-const CACHE_RESULTS_KEY = "tcg_priced_cards_cache_v1";
-const CACHE_QUEUE_KEY = "tcg_card_queue_cache_v1";
-const CACHE_EXCHANGE_KEY = "tcg_exchange_rate_cache_v1";
+const CACHE_RESULTS_KEY = "tcg_priced_cards_cache_v2";
+const CACHE_QUEUE_KEY = "tcg_card_queue_cache_v2";
+const CACHE_EXCHANGE_KEY = "tcg_exchange_rate_cache_v2";
 
 export default function App() {
   const [exchangeRate, setExchangeRate] = useState(() => {
@@ -32,7 +35,8 @@ export default function App() {
   const [exchangeRateLoading, setExchangeRateLoading] = useState(false);
   const [manualRateInput, setManualRateInput] = useState(exchangeRate.toString());
 
-  // Queued card numbers
+  const [onePieceOnly, setOnePieceOnly] = useState(true);
+
   const [cardInputs, setCardInputs] = useState(() => {
     try {
       const saved = localStorage.getItem(CACHE_QUEUE_KEY);
@@ -46,10 +50,8 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   
-  // Modal state for pending variants: { cardNumber: string, variants: Array, remainingQueue: Array }
   const [pendingVariants, setPendingVariants] = useState(null); 
 
-  // Final selected/priced card results
   const [selectedResults, setSelectedResults] = useState(() => {
     try {
       const saved = localStorage.getItem(CACHE_RESULTS_KEY);
@@ -59,10 +61,8 @@ export default function App() {
     }
   });
 
-  // Re-select modal state for editing an existing row
   const [editingRowIndex, setEditingRowIndex] = useState(null);
 
-  // Sync state to LocalStorage
   useEffect(() => {
     localStorage.setItem(CACHE_RESULTS_KEY, JSON.stringify(selectedResults));
   }, [selectedResults]);
@@ -75,7 +75,6 @@ export default function App() {
     localStorage.setItem(CACHE_EXCHANGE_KEY, manualRateInput);
   }, [manualRateInput]);
 
-  // Fetch exchange rate on load
   useEffect(() => {
     fetchExchangeRate();
   }, []);
@@ -115,7 +114,6 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         if (data.cardNumbers && data.cardNumbers.length > 0) {
-          // Merge with existing queue without duplicates
           const newCodes = Array.from(new Set([...cardInputs, ...data.cardNumbers]));
           setCardInputs(newCodes);
           setStatusMessage(`Loaded ${data.cardNumbers.length} card numbers from CSV (Total queued: ${newCodes.length}).`);
@@ -153,12 +151,10 @@ export default function App() {
     }
   };
 
-  // Start/resume batch pricing processing loop
   const startPricingProcess = async () => {
     if (cardInputs.length === 0) return;
     setIsProcessing(true);
 
-    // Identify which card codes in cardInputs haven't been priced yet
     const existingCodes = selectedResults.map(r => r.cardNumber);
     const unpricedCodes = cardInputs.filter(c => !existingCodes.includes(c));
 
@@ -169,13 +165,13 @@ export default function App() {
   const processQueue = async (remainingCodes) => {
     for (let idx = 0; idx < remainingCodes.length; idx++) {
       const code = remainingCodes[idx];
-      setStatusMessage(`Searching TCGPlayer (${idx + 1}/${remainingCodes.length}): ${code}...`);
+      setStatusMessage(`Searching TCGPlayer & Sales History (${idx + 1}/${remainingCodes.length}): ${code}...`);
       
       try {
         const res = await fetch(`${API_BASE}/search`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cardNumber: code }),
+          body: JSON.stringify({ cardNumber: code, onePieceOnly }),
         });
 
         if (res.ok) {
@@ -183,20 +179,20 @@ export default function App() {
           const variants = data.variants || [];
 
           if (variants.length === 0) {
-            // No match found
             setSelectedResults(prev => [...prev, {
               cardNumber: code,
               productName: "Not Found on TCGPlayer",
               setName: "N/A",
               number: code,
               marketPriceUSD: null,
+              recentSalesUSD: [],
+              averageRecentSalesUSD: null,
               imageUrl: "",
               productUrl: `https://www.tcgplayer.com/search/all/product?q=${encodeURIComponent(code)}`,
               status: "Not Found",
               allVariants: []
             }]);
           } else if (variants.length === 1) {
-            // Auto-select single match
             setSelectedResults(prev => [...prev, {
               ...variants[0],
               cardNumber: code,
@@ -204,7 +200,6 @@ export default function App() {
               allVariants: variants
             }]);
           } else {
-            // Multiple variants: open modal and pass remaining queue
             const rest = remainingCodes.slice(idx + 1);
             setPendingVariants({ 
               cardNumber: code, 
@@ -212,7 +207,7 @@ export default function App() {
               remainingQueue: rest 
             });
             setIsProcessing(false);
-            return; // Pause execution for user interaction
+            return;
           }
         }
       } catch (err) {
@@ -222,15 +217,13 @@ export default function App() {
 
     setIsProcessing(false);
     setPendingVariants(null);
-    setStatusMessage("Pricing complete! All selections saved.");
+    setStatusMessage("Pricing complete! All selections and 3-sale averages saved.");
   };
 
-  // User selected a specific variant from modal
   const handleSelectVariant = (selectedVariant) => {
     const isEditing = editingRowIndex !== null;
 
     if (isEditing) {
-      // We are editing an existing row in the results table
       setSelectedResults(prev => {
         const updated = [...prev];
         updated[editingRowIndex] = {
@@ -244,7 +237,6 @@ export default function App() {
       setEditingRowIndex(null);
       setPendingVariants(null);
     } else {
-      // Normal queue processing
       setSelectedResults(prev => [...prev, {
         ...selectedVariant,
         cardNumber: pendingVariants.cardNumber,
@@ -260,12 +252,11 @@ export default function App() {
         processQueue(rest);
       } else {
         setIsProcessing(false);
-        setStatusMessage("Pricing complete! All selections saved.");
+        setStatusMessage("Pricing complete!");
       }
     }
   };
 
-  // User chose to skip the current card variant selection
   const handleSkipVariant = () => {
     if (editingRowIndex !== null) {
       setEditingRowIndex(null);
@@ -280,6 +271,8 @@ export default function App() {
       setName: "Multiple Variants Available",
       number: code,
       marketPriceUSD: null,
+      recentSalesUSD: [],
+      averageRecentSalesUSD: null,
       imageUrl: pendingVariants.variants[0]?.imageUrl || "",
       productUrl: `https://www.tcgplayer.com/search/all/product?q=${encodeURIComponent(code)}`,
       status: "Skipped",
@@ -294,19 +287,17 @@ export default function App() {
       processQueue(rest);
     } else {
       setIsProcessing(false);
-      setStatusMessage("Selection finished (some cards skipped).");
+      setStatusMessage("Selection finished.");
     }
   };
 
-  // User exited out of modal (Cancel/Close)
   const handleCloseModal = () => {
     setPendingVariants(null);
     setEditingRowIndex(null);
     setIsProcessing(false);
-    setStatusMessage("Variant selection paused. Progress saved up to this point!");
+    setStatusMessage("Variant selection paused.");
   };
 
-  // Allow re-selecting variant for an already processed row
   const handleReopenVariantPicker = async (rowIndex, item) => {
     if (item.allVariants && item.allVariants.length > 0) {
       setEditingRowIndex(rowIndex);
@@ -316,13 +307,12 @@ export default function App() {
         remainingQueue: []
       });
     } else {
-      // Fetch fresh search variants
       setStatusMessage(`Fetching options for ${item.cardNumber}...`);
       try {
         const res = await fetch(`${API_BASE}/search`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cardNumber: item.cardNumber }),
+          body: JSON.stringify({ cardNumber: item.cardNumber, onePieceOnly }),
         });
         if (res.ok) {
           const data = await res.json();
@@ -348,13 +338,36 @@ export default function App() {
     if (selectedResults.length === 0) return;
 
     const rate = parseFloat(manualRateInput) || exchangeRate;
-    const headers = ["Card Number", "Product Name", "Set Name", "TCG Number", "Rarity", "Market Price (USD)", "Market Price (AUD)", "Status", "TCGPlayer Link"];
+    const headers = [
+      "Card Number", 
+      "Product Name", 
+      "Set Name", 
+      "TCG Number", 
+      "Rarity", 
+      "Market Price (USD)", 
+      "Market Price (AUD)",
+      "Recent Sale 1 (USD)",
+      "Recent Sale 2 (USD)",
+      "Recent Sale 3 (USD)",
+      "3-Sale Average (USD)",
+      "3-Sale Average (AUD)",
+      "Status", 
+      "TCGPlayer Link"
+    ];
     
     const csvRows = [headers.join(",")];
 
     selectedResults.forEach(item => {
       const priceUSD = item.marketPriceUSD !== null && item.marketPriceUSD !== undefined ? item.marketPriceUSD.toFixed(2) : "N/A";
       const priceAUD = item.marketPriceUSD !== null && item.marketPriceUSD !== undefined ? (item.marketPriceUSD * rate).toFixed(2) : "N/A";
+
+      const sales = item.recentSalesUSD || [];
+      const s1 = sales[0] !== undefined ? `$${sales[0].toFixed(2)}` : "N/A";
+      const s2 = sales[1] !== undefined ? `$${sales[1].toFixed(2)}` : "N/A";
+      const s3 = sales[2] !== undefined ? `$${sales[2].toFixed(2)}` : "N/A";
+
+      const avgUSD = item.averageRecentSalesUSD !== null && item.averageRecentSalesUSD !== undefined ? item.averageRecentSalesUSD.toFixed(2) : "N/A";
+      const avgAUD = item.averageRecentSalesUSD !== null && item.averageRecentSalesUSD !== undefined ? (item.averageRecentSalesUSD * rate).toFixed(2) : "N/A";
 
       const row = [
         `"${item.cardNumber}"`,
@@ -364,6 +377,11 @@ export default function App() {
         `"${item.rarity || ''}"`,
         `"$${priceUSD}"`,
         `"$${priceAUD}"`,
+        `"${s1}"`,
+        `"${s2}"`,
+        `"${s3}"`,
+        `"$${avgUSD}"`,
+        `"$${avgAUD}"`,
         `"${item.status || ''}"`,
         `"${item.productUrl || ''}"`
       ];
@@ -374,7 +392,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.setAttribute("download", `tcg_card_prices_AUD_${new Date().toISOString().slice(0,10)}.csv`);
+    link.setAttribute("download", `tcg_card_prices_3sales_${new Date().toISOString().slice(0,10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -383,7 +401,7 @@ export default function App() {
   const rateNum = parseFloat(manualRateInput) || exchangeRate;
 
   return (
-    <div style={{ maxWidth: '1280px', margin: '0 auto', padding: '32px 20px' }}>
+    <div style={{ maxWidth: '1360px', margin: '0 auto', padding: '32px 20px' }}>
       
       {/* Top Navbar Header */}
       <header className="glass-panel" style={{ padding: '20px 28px', marginBottom: '32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '16px' }}>
@@ -396,13 +414,27 @@ export default function App() {
               TCG Card <span className="gradient-text">Pricing Automation</span>
             </h1>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-              Instant card lookup & variant pricing for TCGPlayer (USD & AUD)
+              Market Prices + 3 Most Recent Purchase Sales & Average (USD & AUD)
             </p>
           </div>
         </div>
 
-        {/* Currency Rate Widget & Cache Control */}
+        {/* Currency Rate Widget & Filters */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+          
+          {/* One Piece Only Toggle */}
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255, 255, 255, 0.04)', padding: '8px 14px', borderRadius: '12px', border: '1px solid var(--border-color)', cursor: 'pointer', fontSize: '0.85rem', color: '#fff' }}>
+            <Filter size={15} color="var(--primary-accent)" />
+            <span>One Piece TCG Only</span>
+            <input 
+              type="checkbox" 
+              checked={onePieceOnly} 
+              onChange={(e) => setOnePieceOnly(e.target.checked)} 
+              style={{ accentColor: 'var(--primary-accent)', width: '16px', height: '16px', cursor: 'pointer' }}
+            />
+          </label>
+
+          {/* USD -> AUD Currency Widget */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: 'rgba(255, 255, 255, 0.04)', padding: '8px 16px', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
             <DollarSign size={18} color="var(--primary-accent)" />
             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>1 USD = </span>
@@ -438,7 +470,7 @@ export default function App() {
       </header>
 
       {/* Main Grid Content */}
-      <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: '24px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '350px 1fr', gap: '24px' }}>
         
         {/* Left Column: Upload & Queue Management */}
         <aside style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -449,8 +481,8 @@ export default function App() {
               <UploadCloud size={20} color="var(--primary-accent)" />
               Upload CSV File
             </h3>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '16px' }}>
-              Select a CSV containing card unique IDs (e.g., ST30-001, OP01-025).
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '14px' }}>
+              Select a CSV containing card unique IDs (e.g., OP13-120 SEC, ST30-001).
             </p>
 
             <label style={{ 
@@ -458,18 +490,38 @@ export default function App() {
               flexDirection: 'column', 
               alignItems: 'center', 
               justifyContent: 'center', 
-              padding: '24px 16px', 
+              padding: '20px 16px', 
               border: '2px dashed var(--border-accent)', 
               borderRadius: '12px', 
               cursor: 'pointer', 
               background: 'rgba(99, 102, 241, 0.03)',
-              transition: 'all 0.2s'
+              transition: 'all 0.2s',
+              marginBottom: '12px'
             }}>
-              <UploadCloud size={32} color="var(--primary-accent)" style={{ marginBottom: '8px' }} />
-              <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>Choose CSV File</span>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '4px' }}>.csv files supported</span>
+              <UploadCloud size={28} color="var(--primary-accent)" style={{ marginBottom: '6px' }} />
+              <span style={{ fontSize: '0.88rem', fontWeight: 600 }}>Choose CSV File</span>
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '2px' }}>.csv files supported</span>
               <input type="file" accept=".csv" onChange={handleFileUpload} style={{ display: 'none' }} />
             </label>
+
+            {/* Download Sample CSV Link */}
+            <div style={{ textAlign: 'center' }}>
+              <a 
+                href={`${API_BASE}/sample-csv`}
+                target="_blank"
+                rel="noreferrer"
+                style={{ 
+                  color: 'var(--primary-accent)', 
+                  fontSize: '0.82rem', 
+                  display: 'inline-flex', 
+                  alignItems: 'center', 
+                  gap: '4px',
+                  textDecoration: 'none'
+                }}
+              >
+                <FileSpreadsheet size={14} /> Download Reference Example CSV
+              </a>
+            </div>
           </div>
 
           {/* Add Manual Code Box */}
@@ -482,7 +534,7 @@ export default function App() {
             <div style={{ display: 'flex', gap: '8px' }}>
               <input 
                 type="text" 
-                placeholder="e.g. ST30-001"
+                placeholder="e.g. OP13-120 SEC"
                 value={manualCodeInput}
                 onChange={(e) => setManualCodeInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && addManualCode()}
@@ -521,7 +573,7 @@ export default function App() {
 
             <div style={{ 
               flex: 1, 
-              maxHeight: '240px', 
+              maxHeight: '220px', 
               overflowY: 'auto', 
               display: 'flex', 
               flexDirection: 'column', 
@@ -573,7 +625,7 @@ export default function App() {
               style={{ width: '100%', marginTop: '18px', justifyContent: 'center' }}
             >
               {isProcessing ? <RefreshCw className="animate-spin" size={18} /> : <Search size={18} />}
-              {isProcessing ? "Fetching Prices..." : `Fetch Prices (${cardInputs.length})`}
+              {isProcessing ? "Fetching Prices & Sales..." : `Fetch Prices (${cardInputs.length})`}
             </button>
           </div>
 
@@ -585,9 +637,9 @@ export default function App() {
           {/* Dashboard Header Bar */}
           <div className="glass-panel" style={{ padding: '20px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
             <div>
-              <h2 style={{ fontSize: '1.3rem', fontWeight: 600 }}>Priced Cards Results ({selectedResults.length})</h2>
+              <h2 style={{ fontSize: '1.3rem', fontWeight: 600 }}>Priced Cards & Sales History ({selectedResults.length})</h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '2px' }}>
-                {statusMessage || "Selections are automatically saved in local browser cache."}
+                {statusMessage || "Includes Market Price, 3 Most Recent Purchase Sales, and 3-Sale Average."}
               </p>
             </div>
 
@@ -598,35 +650,41 @@ export default function App() {
               style={{ background: selectedResults.length > 0 ? 'rgba(16, 185, 129, 0.15)' : undefined, borderColor: selectedResults.length > 0 ? 'rgba(16, 185, 129, 0.4)' : undefined }}
             >
               <Download size={18} color={selectedResults.length > 0 ? '#10b981' : undefined} />
-              Export to CSV (AUD & USD)
+              Export CSV (Market, 3 Sales & Avg AUD/USD)
             </button>
           </div>
 
           {/* Results Table */}
-          <div className="glass-panel" style={{ overflow: 'hidden' }}>
+          <div className="glass-panel" style={{ overflowX: 'auto' }}>
             <table className="custom-table">
               <thead>
                 <tr>
                   <th>Card</th>
                   <th>Set Name</th>
                   <th>Card #</th>
-                  <th>Market Price (USD)</th>
-                  <th>Market Price (AUD)</th>
+                  <th>Market Price</th>
+                  <th>3 Recent Purchase Prices</th>
+                  <th>3-Sale Average</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {selectedResults.length === 0 ? (
                   <tr>
-                    <td colSpan={6} style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-dim)' }}>
+                    <td colSpan={7} style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-dim)' }}>
                       <Sparkles size={36} color="var(--primary-accent)" style={{ marginBottom: '12px', opacity: 0.5 }} />
-                      <p style={{ fontSize: '0.95rem' }}>No priced cards saved yet. Upload a CSV or add card IDs to begin.</p>
+                      <p style={{ fontSize: '0.95rem' }}>No priced cards yet. Upload a CSV or add card IDs to begin.</p>
                     </td>
                   </tr>
                 ) : (
                   selectedResults.map((item, idx) => {
                     const priceUSD = item.marketPriceUSD;
                     const priceAUD = priceUSD !== null && priceUSD !== undefined ? priceUSD * rateNum : null;
+                    
+                    const recentSales = item.recentSalesUSD || [];
+                    const avgUSD = item.averageRecentSalesUSD;
+                    const avgAUD = avgUSD !== null && avgUSD !== undefined ? avgUSD * rateNum : null;
+
                     const isSkipped = item.status === "Skipped";
 
                     return (
@@ -672,19 +730,57 @@ export default function App() {
                           </code>
                         </td>
 
-                        {/* Price USD */}
-                        <td style={{ fontWeight: 700, fontSize: '1rem', color: priceUSD !== null ? '#10b981' : 'var(--text-dim)' }}>
-                          {priceUSD !== null ? `$${priceUSD.toFixed(2)}` : 'N/A'}
+                        {/* Market Price USD / AUD */}
+                        <td>
+                          <div style={{ fontWeight: 700, fontSize: '0.95rem', color: priceUSD !== null ? '#10b981' : 'var(--text-dim)' }}>
+                            {priceUSD !== null ? `$${priceUSD.toFixed(2)} USD` : 'N/A'}
+                          </div>
+                          {priceAUD !== null && (
+                            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                              ~${priceAUD.toFixed(2)} AUD
+                            </div>
+                          )}
                         </td>
 
-                        {/* Price AUD */}
-                        <td style={{ fontWeight: 700, fontSize: '1.05rem', color: priceAUD !== null ? '#38bdf8' : 'var(--text-dim)' }}>
-                          {priceAUD !== null ? `$${priceAUD.toFixed(2)} AUD` : 'N/A'}
+                        {/* 3 Recent Sales */}
+                        <td>
+                          {recentSales.length > 0 ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                {recentSales.map((sPrice, sIdx) => (
+                                  <span key={sIdx} style={{ background: '#0f172a', border: '1px solid var(--border-color)', padding: '2px 6px', borderRadius: '4px', fontSize: '0.8rem', color: '#e2e8f0', fontWeight: 600 }}>
+                                    ${sPrice.toFixed(2)}
+                                  </span>
+                                ))}
+                              </div>
+                              <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginTop: '2px' }}>Last 3 Purchases</span>
+                            </div>
+                          ) : (
+                            <span style={{ color: 'var(--text-dim)', fontSize: '0.85rem' }}>No recent sales</span>
+                          )}
+                        </td>
+
+                        {/* 3-Sale Average */}
+                        <td>
+                          {avgUSD !== null ? (
+                            <div>
+                              <div style={{ fontWeight: 700, fontSize: '1rem', color: '#38bdf8', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <TrendingUp size={14} color="#38bdf8" /> ${avgUSD.toFixed(2)} USD
+                              </div>
+                              {avgAUD !== null && (
+                                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                  ~${avgAUD.toFixed(2)} AUD
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span style={{ color: 'var(--text-dim)', fontSize: '0.85rem' }}>N/A</span>
+                          )}
                         </td>
 
                         {/* Actions */}
                         <td>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                             <button 
                               onClick={() => handleReopenVariantPicker(idx, item)}
                               style={{ background: 'none', border: 'none', color: 'var(--primary-accent)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem' }}
@@ -730,7 +826,7 @@ export default function App() {
           padding: '20px'
         }}>
           <div className="glass-panel" style={{
-            maxWidth: '880px',
+            maxWidth: '900px',
             width: '100%',
             maxHeight: '90vh',
             overflowY: 'auto',
@@ -755,7 +851,6 @@ export default function App() {
                 </p>
               </div>
 
-              {/* Close Button */}
               <button 
                 onClick={handleCloseModal}
                 style={{ 
@@ -776,7 +871,7 @@ export default function App() {
               </button>
             </div>
 
-            {/* Action Bar: Skip & Cancel */}
+            {/* Action Bar */}
             <div style={{ 
               display: 'flex', 
               justify: 'space-between', 
@@ -812,12 +907,14 @@ export default function App() {
             {/* Variant Grid */}
             <div style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
               gap: '20px'
             }}>
               {pendingVariants.variants.map((v, i) => {
                 const usd = v.marketPriceUSD;
                 const aud = usd !== null ? (usd * rateNum).toFixed(2) : "N/A";
+                const avgUSD = v.averageRecentSalesUSD;
+                const avgAUD = avgUSD !== null ? (avgUSD * rateNum).toFixed(2) : "N/A";
 
                 return (
                   <div 
@@ -847,12 +944,16 @@ export default function App() {
                     </div>
 
                     <div style={{ marginTop: 'auto', paddingTop: '10px', borderTop: '1px solid var(--border-color)', width: '100%' }}>
-                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#10b981' }}>
-                        {usd !== null ? `$${usd.toFixed(2)} USD` : 'Price N/A'}
+                      <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Market Price</div>
+                      <div style={{ fontSize: '1.05rem', fontWeight: 700, color: '#10b981', marginBottom: '6px' }}>
+                        {usd !== null ? `$${usd.toFixed(2)} USD (~$${aud} AUD)` : 'Price N/A'}
                       </div>
-                      <div style={{ fontSize: '0.85rem', color: '#38bdf8', fontWeight: 600 }}>
-                        {usd !== null ? `~$${aud} AUD` : ''}
-                      </div>
+
+                      {avgUSD !== null && (
+                        <div style={{ background: 'rgba(56, 189, 248, 0.1)', padding: '4px 8px', borderRadius: '6px', fontSize: '0.8rem', color: '#38bdf8', fontWeight: 600 }}>
+                          3-Sale Avg: ${avgUSD.toFixed(2)} USD (~${avgAUD} AUD)
+                        </div>
+                      )}
                     </div>
                   </div>
                 );

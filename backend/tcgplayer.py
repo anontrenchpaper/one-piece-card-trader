@@ -1,22 +1,14 @@
 import re
-import httpx
-from typing import List, Dict, Any, Optional
+from curl_cffi import requests
+from typing import List, Dict, Any, Optional, Tuple
 from config.settings import TCGPLAYER_SEARCH_API, HEADERS
 
-def extract_card_number(raw_input: str) -> Dict[str, str]:
-    """
-    Extracts the core card number identifier (e.g. 'OP13-120' from 'OP13-120 SEC')
-    and any specified rarity / variant keywords.
-    """
+def extract_card_number(raw_input: str) -> Dict[str, Any]:
     text = raw_input.strip()
-    
-    # 1. Match card numbers like OP13-120, ST30-001, CORI-EN062, 081/088, 4/102
     pattern = r'([A-Za-z0-9]+[-/][0-9A-Za-z]+|\b\d{1,3}/\d{1,3}\b)'
     match = re.search(pattern, text)
-    
     card_number = match.group(1) if match else text
 
-    # Remove common rarity keywords if appended
     rarity_keywords = ["SEC", "SAR", "SR", "SP", "L", "R", "UC", "C", "PARALLEL", "ALT", "HOLO", "FOIL", "PROMO"]
     tokens = text.upper().split()
     detected_rarities = [t for t in tokens if t in rarity_keywords]
@@ -27,7 +19,46 @@ def extract_card_number(raw_input: str) -> Dict[str, str]:
         "rarities": detected_rarities
     }
 
-def search_card_by_number(card_input: str) -> List[Dict[str, Any]]:
+def fetch_recent_sales(product_id: int) -> Tuple[List[float], Optional[float]]:
+    url = f"https://mp-search-api.tcgplayer.com/v1/product/{product_id}/latestsales"
+    payload = {"limit": 10}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/json",
+        "Origin": "https://www.tcgplayer.com",
+        "Referer": f"https://www.tcgplayer.com/product/{product_id}",
+        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"macOS"',
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site"
+    }
+
+    try:
+        res = requests.post(url, json=payload, headers=headers, impersonate="chrome124", timeout=4)
+        if res.status_code == 200:
+            sales = res.json().get("data", [])
+            prices = []
+            for s in sales:
+                p = s.get("purchasePrice")
+                if p is not None:
+                    try:
+                        prices.append(float(p))
+                    except (ValueError, TypeError):
+                        pass
+            
+            recent_3 = prices[:3]
+            avg_3 = round(sum(recent_3) / len(recent_3), 2) if recent_3 else None
+            return recent_3, avg_3
+    except Exception:
+        pass
+
+    return [], None
+
+def search_card_by_number(card_input: str, one_piece_only: bool = True) -> List[Dict[str, Any]]:
     clean_input = card_input.strip()
     if not clean_input:
         return []
@@ -35,59 +66,62 @@ def search_card_by_number(card_input: str) -> List[Dict[str, Any]]:
     parsed = extract_card_number(clean_input)
     target_num = parsed["extracted_number"]
 
-    # Strategy 1: Exact Number term filter (e.g. number: ["OP13-120"])
+    category_filter = {}
+    if one_piece_only:
+        category_filter["productCategoryName"] = ["One Piece Card Game"]
+
+    filters_term = {"term": {"number": [target_num], **category_filter}}
     payload_term = {
         "algorithm": "free_text_search",
         "from": 0,
         "size": 30,
-        "filters": {
-            "term": {
-                "number": [target_num]
-            }
-        },
+        "filters": filters_term,
         "query": "",
         "context": {"shippingCountry": "US", "cart": {}}
     }
 
     raw_results = []
+    search_headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/json",
+        "Origin": "https://www.tcgplayer.com",
+        "Referer": "https://www.tcgplayer.com/",
+        "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"macOS"',
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site"
+    }
+
     try:
-        with httpx.Client(timeout=15.0) as client:
-            res = client.post(TCGPLAYER_SEARCH_API, json=payload_term, headers=HEADERS)
-            if res.status_code == 200:
-                raw_results = res.json().get("results", [{}])[0].get("results", [])
+        res = requests.post(TCGPLAYER_SEARCH_API, json=payload_term, headers=search_headers, impersonate="chrome124", timeout=10)
+        if res.status_code == 200:
+            raw_results = res.json().get("results", [{}])[0].get("results", [])
 
-            # Strategy 2: Free text search using extracted number if term filter returned empty
-            if not raw_results:
-                payload_extracted_query = {
-                    "algorithm": "free_text_search",
-                    "from": 0,
-                    "size": 30,
-                    "filters": {"term": {}},
-                    "query": target_num,
-                    "context": {"shippingCountry": "US", "cart": {}}
-                }
-                res_q = client.post(TCGPLAYER_SEARCH_API, json=payload_extracted_query, headers=HEADERS)
-                if res_q.status_code == 200:
-                    raw_results = res_q.json().get("results", [{}])[0].get("results", [])
+        if not raw_results:
+            filters_fb = {"term": category_filter}
+            payload_extracted = {
+                "algorithm": "free_text_search",
+                "from": 0,
+                "size": 30,
+                "filters": filters_fb,
+                "query": target_num,
+                "context": {"shippingCountry": "US", "cart": {}}
+            }
+            res_ex = requests.post(TCGPLAYER_SEARCH_API, json=payload_extracted, headers=search_headers, impersonate="chrome124", timeout=10)
+            if res_ex.status_code == 200:
+                raw_results = res_ex.json().get("results", [{}])[0].get("results", [])
 
-            # Strategy 3: Free text search using raw input
-            if not raw_results:
-                payload_raw_query = {
-                    "algorithm": "free_text_search",
-                    "from": 0,
-                    "size": 30,
-                    "filters": {"term": {}},
-                    "query": clean_input,
-                    "context": {"shippingCountry": "US", "cart": {}}
-                }
-                res_raw = client.post(TCGPLAYER_SEARCH_API, json=payload_raw_query, headers=HEADERS)
-                if res_raw.status_code == 200:
-                    raw_results = res_raw.json().get("results", [{}])[0].get("results", [])
+        if not raw_results and one_piece_only:
+            return search_card_by_number(card_input, one_piece_only=False)
+
     except Exception as e:
         print(f"Error fetching TCGPlayer data for '{card_input}': {e}")
         return []
 
-    # Filter and parse results
     parsed_variants = []
     seen_ids = set()
 
@@ -104,14 +138,19 @@ def search_card_by_number(card_input: str) -> List[Dict[str, Any]]:
         number = custom.get("number", target_num)
         rarity = custom.get("rarity", "")
 
-        # Check if this result matches our target card number (exact or partial match)
         num_clean = str(number).strip().upper()
         target_clean = target_num.strip().upper()
-
         is_exact_num_match = (num_clean == target_clean or target_clean in num_clean)
 
         image_url = f"https://tcgplayer-cdn.tcgplayer.com/product/{product_id}_200w.jpg"
         product_url = f"https://www.tcgplayer.com/product/{product_id}"
+
+        # Fetch recent sales or fallback gracefully to market price
+        recent_3_sales, avg_3_sales = fetch_recent_sales(product_id)
+
+        market_val = float(market_price) if market_price is not None else None
+        if avg_3_sales is None and market_val is not None:
+            avg_3_sales = round(market_val, 2)
 
         seen_ids.add(product_id)
         parsed_variants.append({
@@ -120,13 +159,14 @@ def search_card_by_number(card_input: str) -> List[Dict[str, Any]]:
             "setName": set_name,
             "number": number,
             "rarity": rarity,
-            "marketPriceUSD": float(market_price) if market_price is not None else None,
+            "marketPriceUSD": market_val,
+            "recentSalesUSD": recent_3_sales,
+            "averageRecentSalesUSD": avg_3_sales,
             "imageUrl": image_url,
             "productUrl": product_url,
             "isExactMatch": is_exact_num_match
         })
 
-    # Sort results: exact card number matches first, then by market price
     parsed_variants.sort(key=lambda x: (not x["isExactMatch"], x["marketPriceUSD"] is None))
 
     return parsed_variants

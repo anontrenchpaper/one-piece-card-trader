@@ -1,22 +1,21 @@
 import sys
 import os
 
-# Add root directory to sys.path to allow config import
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import io
 import csv
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from backend.currency import fetch_usd_to_aud_rate
 from backend.tcgplayer import search_card_by_number
 
-app = FastAPI(title="TCG Card Pricing API", version="1.0.0")
+app = FastAPI(title="TCG Card Pricing API", version="1.1.0")
 
-# Enable CORS for React frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,20 +26,7 @@ app.add_middleware(
 
 class CardSearchRequest(BaseModel):
     cardNumber: str
-
-class BatchSearchRequest(BaseModel):
-    cardNumbers: List[str]
-
-class SelectedVariant(BaseModel):
-    cardNumber: str
-    productId: int
-    productName: str
-    setName: str
-    number: str
-    rarity: Optional[str] = ""
-    marketPriceUSD: Optional[float] = None
-    imageUrl: str
-    productUrl: str
+    onePieceOnly: Optional[bool] = True
 
 @app.get("/api/health")
 def health_check():
@@ -51,9 +37,16 @@ def get_exchange_rate():
     rate = fetch_usd_to_aud_rate()
     return {"rate": rate, "base": "USD", "target": "AUD"}
 
+@app.get("/api/sample-csv")
+def download_sample_csv():
+    sample_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "example_card_inputs.csv"))
+    if os.path.exists(sample_path):
+        return FileResponse(sample_path, filename="example_card_inputs.csv", media_type="text/csv")
+    raise HTTPException(status_code=404, detail="Sample CSV file not found.")
+
 @app.post("/api/search")
 def search_card(req: CardSearchRequest):
-    variants = search_card_by_number(req.cardNumber)
+    variants = search_card_by_number(req.cardNumber, one_piece_only=req.onePieceOnly if req.onePieceOnly is not None else True)
     return {"cardNumber": req.cardNumber, "total": len(variants), "variants": variants}
 
 @app.post("/api/parse-csv")
@@ -69,11 +62,9 @@ async def parse_csv(file: UploadFile = File(...)):
     if not rows:
         return {"cardNumbers": []}
 
-    # Detect header row vs raw data
     first_row = [c.strip() for c in rows[0]]
     card_col_idx = 0
     
-    # Check if header contains keywords like "card", "id", "number", "code", "identifier"
     for idx, col in enumerate(first_row):
         col_lower = col.lower()
         if any(k in col_lower for k in ["card", "number", "code", "id", "uid", "sku"]):
