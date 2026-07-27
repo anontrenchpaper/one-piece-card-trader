@@ -1,0 +1,867 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  UploadCloud, 
+  Search, 
+  Download, 
+  DollarSign, 
+  ExternalLink, 
+  Layers, 
+  CheckCircle2, 
+  AlertCircle, 
+  RefreshCw, 
+  Sparkles,
+  CreditCard,
+  Plus,
+  Trash2,
+  X,
+  SkipForward,
+  Edit3,
+  RotateCcw
+} from 'lucide-react';
+
+const API_BASE = "http://localhost:8000/api";
+const CACHE_RESULTS_KEY = "tcg_priced_cards_cache_v1";
+const CACHE_QUEUE_KEY = "tcg_card_queue_cache_v1";
+const CACHE_EXCHANGE_KEY = "tcg_exchange_rate_cache_v1";
+
+export default function App() {
+  const [exchangeRate, setExchangeRate] = useState(() => {
+    const saved = localStorage.getItem(CACHE_EXCHANGE_KEY);
+    return saved ? parseFloat(saved) : 1.52;
+  });
+  const [exchangeRateLoading, setExchangeRateLoading] = useState(false);
+  const [manualRateInput, setManualRateInput] = useState(exchangeRate.toString());
+
+  // Queued card numbers
+  const [cardInputs, setCardInputs] = useState(() => {
+    try {
+      const saved = localStorage.getItem(CACHE_QUEUE_KEY);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [manualCodeInput, setManualCodeInput] = useState("");
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [statusMessage, setStatusMessage] = useState("");
+  
+  // Modal state for pending variants: { cardNumber: string, variants: Array, remainingQueue: Array }
+  const [pendingVariants, setPendingVariants] = useState(null); 
+
+  // Final selected/priced card results
+  const [selectedResults, setSelectedResults] = useState(() => {
+    try {
+      const saved = localStorage.getItem(CACHE_RESULTS_KEY);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  // Re-select modal state for editing an existing row
+  const [editingRowIndex, setEditingRowIndex] = useState(null);
+
+  // Sync state to LocalStorage
+  useEffect(() => {
+    localStorage.setItem(CACHE_RESULTS_KEY, JSON.stringify(selectedResults));
+  }, [selectedResults]);
+
+  useEffect(() => {
+    localStorage.setItem(CACHE_QUEUE_KEY, JSON.stringify(cardInputs));
+  }, [cardInputs]);
+
+  useEffect(() => {
+    localStorage.setItem(CACHE_EXCHANGE_KEY, manualRateInput);
+  }, [manualRateInput]);
+
+  // Fetch exchange rate on load
+  useEffect(() => {
+    fetchExchangeRate();
+  }, []);
+
+  const fetchExchangeRate = async () => {
+    setExchangeRateLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/exchange-rate`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.rate) {
+          setExchangeRate(data.rate);
+          setManualRateInput(data.rate.toString());
+        }
+      }
+    } catch (err) {
+      console.warn("Could not fetch live exchange rate, using cached rate:", err);
+    } finally {
+      setExchangeRateLoading(false);
+    }
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    setStatusMessage("Parsing uploaded CSV file...");
+    try {
+      const res = await fetch(`${API_BASE}/parse-csv`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.cardNumbers && data.cardNumbers.length > 0) {
+          // Merge with existing queue without duplicates
+          const newCodes = Array.from(new Set([...cardInputs, ...data.cardNumbers]));
+          setCardInputs(newCodes);
+          setStatusMessage(`Loaded ${data.cardNumbers.length} card numbers from CSV (Total queued: ${newCodes.length}).`);
+        } else {
+          setStatusMessage("No valid card numbers found in uploaded file.");
+        }
+      } else {
+        setStatusMessage("Error parsing CSV file.");
+      }
+    } catch (err) {
+      setStatusMessage("Failed to upload and parse CSV.");
+    }
+  };
+
+  const addManualCode = () => {
+    const trimmed = manualCodeInput.trim();
+    if (!trimmed) return;
+    if (!cardInputs.includes(trimmed)) {
+      setCardInputs([...cardInputs, trimmed]);
+    }
+    setManualCodeInput("");
+  };
+
+  const removeCardCode = (code) => {
+    setCardInputs(cardInputs.filter(c => c !== code));
+  };
+
+  const clearAllSavedData = () => {
+    if (window.confirm("Are you sure you want to clear all queued cards and saved pricing results?")) {
+      setSelectedResults([]);
+      setCardInputs([]);
+      localStorage.removeItem(CACHE_RESULTS_KEY);
+      localStorage.removeItem(CACHE_QUEUE_KEY);
+      setStatusMessage("Cleared cached data.");
+    }
+  };
+
+  // Start/resume batch pricing processing loop
+  const startPricingProcess = async () => {
+    if (cardInputs.length === 0) return;
+    setIsProcessing(true);
+
+    // Identify which card codes in cardInputs haven't been priced yet
+    const existingCodes = selectedResults.map(r => r.cardNumber);
+    const unpricedCodes = cardInputs.filter(c => !existingCodes.includes(c));
+
+    const queueToRun = unpricedCodes.length > 0 ? unpricedCodes : cardInputs;
+    await processQueue(queueToRun);
+  };
+
+  const processQueue = async (remainingCodes) => {
+    for (let idx = 0; idx < remainingCodes.length; idx++) {
+      const code = remainingCodes[idx];
+      setStatusMessage(`Searching TCGPlayer (${idx + 1}/${remainingCodes.length}): ${code}...`);
+      
+      try {
+        const res = await fetch(`${API_BASE}/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cardNumber: code }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const variants = data.variants || [];
+
+          if (variants.length === 0) {
+            // No match found
+            setSelectedResults(prev => [...prev, {
+              cardNumber: code,
+              productName: "Not Found on TCGPlayer",
+              setName: "N/A",
+              number: code,
+              marketPriceUSD: null,
+              imageUrl: "",
+              productUrl: `https://www.tcgplayer.com/search/all/product?q=${encodeURIComponent(code)}`,
+              status: "Not Found",
+              allVariants: []
+            }]);
+          } else if (variants.length === 1) {
+            // Auto-select single match
+            setSelectedResults(prev => [...prev, {
+              ...variants[0],
+              cardNumber: code,
+              status: "Exact Match",
+              allVariants: variants
+            }]);
+          } else {
+            // Multiple variants: open modal and pass remaining queue
+            const rest = remainingCodes.slice(idx + 1);
+            setPendingVariants({ 
+              cardNumber: code, 
+              variants, 
+              remainingQueue: rest 
+            });
+            setIsProcessing(false);
+            return; // Pause execution for user interaction
+          }
+        }
+      } catch (err) {
+        console.error(`Error searching ${code}:`, err);
+      }
+    }
+
+    setIsProcessing(false);
+    setPendingVariants(null);
+    setStatusMessage("Pricing complete! All selections saved.");
+  };
+
+  // User selected a specific variant from modal
+  const handleSelectVariant = (selectedVariant) => {
+    const isEditing = editingRowIndex !== null;
+
+    if (isEditing) {
+      // We are editing an existing row in the results table
+      setSelectedResults(prev => {
+        const updated = [...prev];
+        updated[editingRowIndex] = {
+          ...selectedVariant,
+          cardNumber: pendingVariants.cardNumber,
+          status: "User Selected",
+          allVariants: pendingVariants.variants
+        };
+        return updated;
+      });
+      setEditingRowIndex(null);
+      setPendingVariants(null);
+    } else {
+      // Normal queue processing
+      setSelectedResults(prev => [...prev, {
+        ...selectedVariant,
+        cardNumber: pendingVariants.cardNumber,
+        status: "User Selected",
+        allVariants: pendingVariants.variants
+      }]);
+
+      const rest = pendingVariants.remainingQueue || [];
+      setPendingVariants(null);
+
+      if (rest.length > 0) {
+        setIsProcessing(true);
+        processQueue(rest);
+      } else {
+        setIsProcessing(false);
+        setStatusMessage("Pricing complete! All selections saved.");
+      }
+    }
+  };
+
+  // User chose to skip the current card variant selection
+  const handleSkipVariant = () => {
+    if (editingRowIndex !== null) {
+      setEditingRowIndex(null);
+      setPendingVariants(null);
+      return;
+    }
+
+    const code = pendingVariants.cardNumber;
+    setSelectedResults(prev => [...prev, {
+      cardNumber: code,
+      productName: "Skipped by User",
+      setName: "Multiple Variants Available",
+      number: code,
+      marketPriceUSD: null,
+      imageUrl: pendingVariants.variants[0]?.imageUrl || "",
+      productUrl: `https://www.tcgplayer.com/search/all/product?q=${encodeURIComponent(code)}`,
+      status: "Skipped",
+      allVariants: pendingVariants.variants
+    }]);
+
+    const rest = pendingVariants.remainingQueue || [];
+    setPendingVariants(null);
+
+    if (rest.length > 0) {
+      setIsProcessing(true);
+      processQueue(rest);
+    } else {
+      setIsProcessing(false);
+      setStatusMessage("Selection finished (some cards skipped).");
+    }
+  };
+
+  // User exited out of modal (Cancel/Close)
+  const handleCloseModal = () => {
+    setPendingVariants(null);
+    setEditingRowIndex(null);
+    setIsProcessing(false);
+    setStatusMessage("Variant selection paused. Progress saved up to this point!");
+  };
+
+  // Allow re-selecting variant for an already processed row
+  const handleReopenVariantPicker = async (rowIndex, item) => {
+    if (item.allVariants && item.allVariants.length > 0) {
+      setEditingRowIndex(rowIndex);
+      setPendingVariants({
+        cardNumber: item.cardNumber,
+        variants: item.allVariants,
+        remainingQueue: []
+      });
+    } else {
+      // Fetch fresh search variants
+      setStatusMessage(`Fetching options for ${item.cardNumber}...`);
+      try {
+        const res = await fetch(`${API_BASE}/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cardNumber: item.cardNumber }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const variants = data.variants || [];
+          if (variants.length > 0) {
+            setEditingRowIndex(rowIndex);
+            setPendingVariants({
+              cardNumber: item.cardNumber,
+              variants,
+              remainingQueue: []
+            });
+          } else {
+            alert(`No variants found on TCGPlayer for ${item.cardNumber}.`);
+          }
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+
+  const exportToCSV = () => {
+    if (selectedResults.length === 0) return;
+
+    const rate = parseFloat(manualRateInput) || exchangeRate;
+    const headers = ["Card Number", "Product Name", "Set Name", "TCG Number", "Rarity", "Market Price (USD)", "Market Price (AUD)", "Status", "TCGPlayer Link"];
+    
+    const csvRows = [headers.join(",")];
+
+    selectedResults.forEach(item => {
+      const priceUSD = item.marketPriceUSD !== null && item.marketPriceUSD !== undefined ? item.marketPriceUSD.toFixed(2) : "N/A";
+      const priceAUD = item.marketPriceUSD !== null && item.marketPriceUSD !== undefined ? (item.marketPriceUSD * rate).toFixed(2) : "N/A";
+
+      const row = [
+        `"${item.cardNumber}"`,
+        `"${item.productName.replace(/"/g, '""')}"`,
+        `"${item.setName.replace(/"/g, '""')}"`,
+        `"${item.number || ''}"`,
+        `"${item.rarity || ''}"`,
+        `"$${priceUSD}"`,
+        `"$${priceAUD}"`,
+        `"${item.status || ''}"`,
+        `"${item.productUrl || ''}"`
+      ];
+      csvRows.push(row.join(","));
+    });
+
+    const blob = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `tcg_card_prices_AUD_${new Date().toISOString().slice(0,10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const rateNum = parseFloat(manualRateInput) || exchangeRate;
+
+  return (
+    <div style={{ maxWidth: '1280px', margin: '0 auto', padding: '32px 20px' }}>
+      
+      {/* Top Navbar Header */}
+      <header className="glass-panel" style={{ padding: '20px 28px', marginBottom: '32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+          <div style={{ background: 'var(--primary-gradient)', padding: '12px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <CreditCard size={26} color="#fff" />
+          </div>
+          <div>
+            <h1 style={{ fontSize: '1.6rem', fontWeight: 700 }}>
+              TCG Card <span className="gradient-text">Pricing Automation</span>
+            </h1>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+              Instant card lookup & variant pricing for TCGPlayer (USD & AUD)
+            </p>
+          </div>
+        </div>
+
+        {/* Currency Rate Widget & Cache Control */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: 'rgba(255, 255, 255, 0.04)', padding: '8px 16px', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
+            <DollarSign size={18} color="var(--primary-accent)" />
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>1 USD = </span>
+            <input 
+              type="number" 
+              step="0.01" 
+              value={manualRateInput} 
+              onChange={(e) => setManualRateInput(e.target.value)}
+              style={{ width: '70px', background: '#0f172a', border: '1px solid var(--border-accent)', color: '#fff', padding: '4px 8px', borderRadius: '6px', fontSize: '0.9rem', fontWeight: 600 }}
+            />
+            <span style={{ fontSize: '0.9rem', fontWeight: 700, color: '#fff' }}>AUD</span>
+            <button 
+              onClick={fetchExchangeRate} 
+              title="Refresh live USD to AUD exchange rate" 
+              disabled={exchangeRateLoading}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}
+            >
+              <RefreshCw size={15} className={exchangeRateLoading ? "animate-spin" : ""} />
+            </button>
+          </div>
+
+          {(selectedResults.length > 0 || cardInputs.length > 0) && (
+            <button 
+              onClick={clearAllSavedData} 
+              className="btn-secondary"
+              title="Clear cached results and start clean"
+              style={{ padding: '8px 14px', fontSize: '0.85rem', borderColor: 'rgba(239, 68, 68, 0.3)', color: '#ef4444' }}
+            >
+              <RotateCcw size={14} /> Clear Cache
+            </button>
+          )}
+        </div>
+      </header>
+
+      {/* Main Grid Content */}
+      <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: '24px' }}>
+        
+        {/* Left Column: Upload & Queue Management */}
+        <aside style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          
+          {/* File Upload Box */}
+          <div className="glass-panel" style={{ padding: '24px' }}>
+            <h3 style={{ fontSize: '1.1rem', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <UploadCloud size={20} color="var(--primary-accent)" />
+              Upload CSV File
+            </h3>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '16px' }}>
+              Select a CSV containing card unique IDs (e.g., ST30-001, OP01-025).
+            </p>
+
+            <label style={{ 
+              display: 'flex', 
+              flexDirection: 'column', 
+              alignItems: 'center', 
+              justifyContent: 'center', 
+              padding: '24px 16px', 
+              border: '2px dashed var(--border-accent)', 
+              borderRadius: '12px', 
+              cursor: 'pointer', 
+              background: 'rgba(99, 102, 241, 0.03)',
+              transition: 'all 0.2s'
+            }}>
+              <UploadCloud size={32} color="var(--primary-accent)" style={{ marginBottom: '8px' }} />
+              <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>Choose CSV File</span>
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '4px' }}>.csv files supported</span>
+              <input type="file" accept=".csv" onChange={handleFileUpload} style={{ display: 'none' }} />
+            </label>
+          </div>
+
+          {/* Add Manual Code Box */}
+          <div className="glass-panel" style={{ padding: '24px' }}>
+            <h3 style={{ fontSize: '1.1rem', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Plus size={20} color="var(--primary-accent)" />
+              Add Card ID Manually
+            </h3>
+
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input 
+                type="text" 
+                placeholder="e.g. ST30-001"
+                value={manualCodeInput}
+                onChange={(e) => setManualCodeInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && addManualCode()}
+                style={{
+                  flex: 1,
+                  background: '#0f172a',
+                  border: '1px solid var(--border-color)',
+                  color: '#fff',
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  fontSize: '0.9rem'
+                }}
+              />
+              <button onClick={addManualCode} className="btn-primary" style={{ padding: '10px 14px' }}>
+                Add
+              </button>
+            </div>
+          </div>
+
+          {/* Queue List */}
+          <div className="glass-panel" style={{ padding: '24px', flex: 1, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+              <h3 style={{ fontSize: '1.1rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Layers size={20} color="var(--primary-accent)" />
+                Card Queue ({cardInputs.length})
+              </h3>
+              {cardInputs.length > 0 && (
+                <button 
+                  onClick={() => setCardInputs([])} 
+                  style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: '0.8rem', cursor: 'pointer' }}
+                >
+                  Clear Queue
+                </button>
+              )}
+            </div>
+
+            <div style={{ 
+              flex: 1, 
+              maxHeight: '240px', 
+              overflowY: 'auto', 
+              display: 'flex', 
+              flexDirection: 'column', 
+              gap: '8px',
+              paddingRight: '4px'
+            }}>
+              {cardInputs.length === 0 ? (
+                <p style={{ color: 'var(--text-dim)', fontSize: '0.85rem', textAlign: 'center', margin: 'auto 0' }}>
+                  No card numbers queued yet. Upload a CSV or add IDs manually above.
+                </p>
+              ) : (
+                cardInputs.map((code, idx) => {
+                  const isPriced = selectedResults.some(r => r.cardNumber === code);
+                  return (
+                    <div key={idx} style={{ 
+                      display: 'flex', 
+                      justify: 'space-between', 
+                      alignItems: 'center', 
+                      background: isPriced ? 'rgba(16, 185, 129, 0.08)' : 'rgba(255, 255, 255, 0.03)', 
+                      border: isPriced ? '1px solid rgba(16, 185, 129, 0.2)' : '1px solid transparent',
+                      padding: '8px 12px', 
+                      borderRadius: '8px',
+                      fontSize: '0.88rem'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontWeight: 600, fontFamily: 'monospace' }}>{code}</span>
+                        {isPriced && (
+                          <span style={{ fontSize: '0.7rem', color: '#10b981', background: 'rgba(16, 185, 129, 0.15)', padding: '1px 6px', borderRadius: '4px' }}>
+                            Priced
+                          </span>
+                        )}
+                      </div>
+                      <button 
+                        onClick={() => removeCardCode(code)} 
+                        style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer' }}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <button 
+              onClick={startPricingProcess} 
+              disabled={isProcessing || cardInputs.length === 0}
+              className="btn-primary"
+              style={{ width: '100%', marginTop: '18px', justifyContent: 'center' }}
+            >
+              {isProcessing ? <RefreshCw className="animate-spin" size={18} /> : <Search size={18} />}
+              {isProcessing ? "Fetching Prices..." : `Fetch Prices (${cardInputs.length})`}
+            </button>
+          </div>
+
+        </aside>
+
+        {/* Right Column: Pricing Dashboard & Results Table */}
+        <main style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          
+          {/* Dashboard Header Bar */}
+          <div className="glass-panel" style={{ padding: '20px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+            <div>
+              <h2 style={{ fontSize: '1.3rem', fontWeight: 600 }}>Priced Cards Results ({selectedResults.length})</h2>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '2px' }}>
+                {statusMessage || "Selections are automatically saved in local browser cache."}
+              </p>
+            </div>
+
+            <button 
+              onClick={exportToCSV} 
+              disabled={selectedResults.length === 0}
+              className="btn-secondary"
+              style={{ background: selectedResults.length > 0 ? 'rgba(16, 185, 129, 0.15)' : undefined, borderColor: selectedResults.length > 0 ? 'rgba(16, 185, 129, 0.4)' : undefined }}
+            >
+              <Download size={18} color={selectedResults.length > 0 ? '#10b981' : undefined} />
+              Export to CSV (AUD & USD)
+            </button>
+          </div>
+
+          {/* Results Table */}
+          <div className="glass-panel" style={{ overflow: 'hidden' }}>
+            <table className="custom-table">
+              <thead>
+                <tr>
+                  <th>Card</th>
+                  <th>Set Name</th>
+                  <th>Card #</th>
+                  <th>Market Price (USD)</th>
+                  <th>Market Price (AUD)</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {selectedResults.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-dim)' }}>
+                      <Sparkles size={36} color="var(--primary-accent)" style={{ marginBottom: '12px', opacity: 0.5 }} />
+                      <p style={{ fontSize: '0.95rem' }}>No priced cards saved yet. Upload a CSV or add card IDs to begin.</p>
+                    </td>
+                  </tr>
+                ) : (
+                  selectedResults.map((item, idx) => {
+                    const priceUSD = item.marketPriceUSD;
+                    const priceAUD = priceUSD !== null && priceUSD !== undefined ? priceUSD * rateNum : null;
+                    const isSkipped = item.status === "Skipped";
+
+                    return (
+                      <tr key={idx}>
+                        {/* Image + Title */}
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                            {item.imageUrl ? (
+                              <img 
+                                src={item.imageUrl} 
+                                alt={item.productName} 
+                                style={{ width: '44px', height: '62px', objectFit: 'cover', borderRadius: '6px', border: '1px solid var(--border-color)' }} 
+                              />
+                            ) : (
+                              <div style={{ width: '44px', height: '62px', background: '#1e293b', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <CreditCard size={18} color="var(--text-dim)" />
+                              </div>
+                            )}
+                            <div>
+                              <div style={{ fontWeight: 600, fontSize: '0.95rem', color: '#fff' }}>{item.productName}</div>
+                              <span style={{ 
+                                fontSize: '0.75rem', 
+                                color: isSkipped ? '#f59e0b' : 'var(--primary-accent)', 
+                                background: isSkipped ? 'rgba(245, 158, 11, 0.12)' : 'rgba(99, 102, 241, 0.1)', 
+                                padding: '2px 6px', 
+                                borderRadius: '4px' 
+                              }}>
+                                {item.status || 'Priced'}
+                              </span>
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Set Name */}
+                        <td style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                          {item.setName}
+                        </td>
+
+                        {/* Card Number */}
+                        <td>
+                          <code style={{ background: '#0f172a', padding: '4px 8px', borderRadius: '4px', fontSize: '0.85rem', color: '#38bdf8' }}>
+                            {item.number || item.cardNumber}
+                          </code>
+                        </td>
+
+                        {/* Price USD */}
+                        <td style={{ fontWeight: 700, fontSize: '1rem', color: priceUSD !== null ? '#10b981' : 'var(--text-dim)' }}>
+                          {priceUSD !== null ? `$${priceUSD.toFixed(2)}` : 'N/A'}
+                        </td>
+
+                        {/* Price AUD */}
+                        <td style={{ fontWeight: 700, fontSize: '1.05rem', color: priceAUD !== null ? '#38bdf8' : 'var(--text-dim)' }}>
+                          {priceAUD !== null ? `$${priceAUD.toFixed(2)} AUD` : 'N/A'}
+                        </td>
+
+                        {/* Actions */}
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <button 
+                              onClick={() => handleReopenVariantPicker(idx, item)}
+                              style={{ background: 'none', border: 'none', color: 'var(--primary-accent)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem' }}
+                              title="Re-open variant picker for this card"
+                            >
+                              <Edit3 size={14} /> Switch
+                            </button>
+
+                            {item.productUrl && (
+                              <a 
+                                href={item.productUrl} 
+                                target="_blank" 
+                                rel="noreferrer" 
+                                style={{ color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem' }}
+                              >
+                                View <ExternalLink size={13} />
+                              </a>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+
+        </main>
+      </div>
+
+      {/* Interactive Card Variant Selector Modal */}
+      {pendingVariants && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0, 0, 0, 0.85)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+          padding: '20px'
+        }}>
+          <div className="glass-panel" style={{
+            maxWidth: '880px',
+            width: '100%',
+            maxHeight: '90vh',
+            overflowY: 'auto',
+            padding: '32px',
+            border: '1px solid var(--primary-accent)',
+            position: 'relative'
+          }}>
+            
+            {/* Top Modal Controls */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
+                  <AlertCircle color="var(--primary-accent)" size={24} />
+                  <h2 style={{ fontSize: '1.4rem' }}>
+                    Select Variant for "{pendingVariants.cardNumber}"
+                  </h2>
+                </div>
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                  {editingRowIndex !== null 
+                    ? "Editing selected variant for this card."
+                    : `Multiple prints/variants found on TCGPlayer (${pendingVariants.variants.length} options).`}
+                </p>
+              </div>
+
+              {/* Close Button */}
+              <button 
+                onClick={handleCloseModal}
+                style={{ 
+                  background: 'rgba(255, 255, 255, 0.06)', 
+                  border: '1px solid var(--border-color)', 
+                  color: '#fff', 
+                  borderRadius: '50%', 
+                  width: '36px', 
+                  height: '36px', 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center', 
+                  cursor: 'pointer' 
+                }}
+                title="Exit / Save & Close Selection Modal"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Action Bar: Skip & Cancel */}
+            <div style={{ 
+              display: 'flex', 
+              justify: 'space-between', 
+              alignItems: 'center', 
+              background: 'rgba(255, 255, 255, 0.03)', 
+              padding: '12px 18px', 
+              borderRadius: '10px',
+              marginBottom: '24px'
+            }}>
+              <span style={{ fontSize: '0.85rem', color: 'var(--text-dim)' }}>
+                Don't see your desired print variant below?
+              </span>
+              
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button 
+                  onClick={handleSkipVariant} 
+                  className="btn-secondary"
+                  style={{ padding: '6px 14px', fontSize: '0.85rem', borderColor: 'rgba(245, 158, 11, 0.4)', color: '#f59e0b' }}
+                >
+                  <SkipForward size={14} /> Skip This Card
+                </button>
+
+                <button 
+                  onClick={handleCloseModal} 
+                  className="btn-secondary"
+                  style={{ padding: '6px 14px', fontSize: '0.85rem' }}
+                >
+                  Close & Pause Batch
+                </button>
+              </div>
+            </div>
+
+            {/* Variant Grid */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+              gap: '20px'
+            }}>
+              {pendingVariants.variants.map((v, i) => {
+                const usd = v.marketPriceUSD;
+                const aud = usd !== null ? (usd * rateNum).toFixed(2) : "N/A";
+
+                return (
+                  <div 
+                    key={i} 
+                    onClick={() => handleSelectVariant(v)}
+                    className="glass-panel variant-card"
+                    style={{
+                      padding: '16px',
+                      cursor: 'pointer',
+                      background: 'rgba(255, 255, 255, 0.03)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      textAlign: 'center'
+                    }}
+                  >
+                    <img 
+                      src={v.imageUrl} 
+                      alt={v.productName} 
+                      style={{ width: '130px', height: '180px', objectFit: 'cover', borderRadius: '8px', marginBottom: '12px', boxShadow: '0 8px 16px rgba(0,0,0,0.4)' }}
+                    />
+                    <div style={{ fontWeight: 700, fontSize: '0.95rem', color: '#fff', marginBottom: '4px' }}>
+                      {v.productName}
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                      {v.setName}
+                    </div>
+
+                    <div style={{ marginTop: 'auto', paddingTop: '10px', borderTop: '1px solid var(--border-color)', width: '100%' }}>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#10b981' }}>
+                        {usd !== null ? `$${usd.toFixed(2)} USD` : 'Price N/A'}
+                      </div>
+                      <div style={{ fontSize: '0.85rem', color: '#38bdf8', fontWeight: 600 }}>
+                        {usd !== null ? `~$${aud} AUD` : ''}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}
