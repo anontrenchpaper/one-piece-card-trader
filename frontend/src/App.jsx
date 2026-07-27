@@ -542,7 +542,7 @@ function MainDashboard() {
 
             <div style={{ textAlign: 'center' }}>
               <a 
-                href="/dash-card-trading/example_card_inputs.csv"
+                href="/one-piece-card-trader/example_card_inputs.csv"
                 download="example_card_inputs.csv"
                 style={{ 
                   color: 'var(--primary-accent)', 

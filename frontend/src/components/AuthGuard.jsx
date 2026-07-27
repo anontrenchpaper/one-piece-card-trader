@@ -25,11 +25,8 @@ export default function AuthGuard({ children }) {
     try {
       const hashedInput = await hashPasscode(passcodeInput);
       
-      // Match against stored hash or dev plaintext fallback
-      if (
-        hashedInput === AUTH_CONFIG.PASSCODE_HASH || 
-        passcodeInput.trim() === AUTH_CONFIG.PASSCODE_PLAIN_DEV
-      ) {
+      // Strict cryptographic hash verification
+      if (hashedInput === AUTH_CONFIG.PASSCODE_HASH) {
         sessionStorage.setItem(AUTH_CONFIG.SESSION_STORAGE_KEY, 'authenticated');
         setIsAuthenticated(true);
       } else {
@@ -82,7 +79,7 @@ export default function AuthGuard({ children }) {
         </h2>
 
         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '28px' }}>
-          Enter the access passcode to unlock the TCG Card Pricing Application.
+          Enter your secret passcode to unlock the TCG Card Pricing Application.
         </p>
 
         <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -127,7 +124,7 @@ export default function AuthGuard({ children }) {
 
         <div style={{ marginTop: '24px', fontSize: '0.78rem', color: 'var(--text-dim)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
           <ShieldCheck size={14} color="#10b981" />
-          <span>Passcode Default: <code>card-trading-2026</code></span>
+          <span>SHA-256 Cryptographic Authentication Active</span>
         </div>
 
       </div>

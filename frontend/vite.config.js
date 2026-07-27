@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// https://vite.dev/config/
+// Vite config updated for repository 'one-piece-card-trader'
 export default defineConfig({
   plugins: [react()],
-  base: '/dash-card-trading/'
+  base: '/one-piece-card-trader/'
 })

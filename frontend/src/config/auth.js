@@ -1,10 +1,9 @@
-// Configuration for Passcode Authentication on GitHub Pages / App
+// Cryptographically Secure Passcode Authentication Config
+// Contains ONLY the one-way SHA-256 cryptographic hash fingerprint
 
 export const AUTH_CONFIG = {
-  // Default Passcode: "card-trading-2026"
-  // SHA-256 Hash of "card-trading-2026"
-  PASSCODE_HASH: "23cf106b1297073245aa5d54a50d2f0eb3cbfa1ad84a7e937d1dd1f2a32cfa8a",
-  PASSCODE_PLAIN_DEV: "card-trading-2026",
+  // One-way SHA-256 hash fingerprint of the secret passcode
+  PASSCODE_HASH: "af8134fcae21edc431e6e095d482387f4ac37eb625ab9a6ec93fc1574370f917",
   SESSION_STORAGE_KEY: "tcg_auth_token_v1"
 };
 
