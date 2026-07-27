@@ -1,7 +1,10 @@
-import re
-from curl_cffi import requests
-from typing import List, Dict, Any, Optional, Tuple
-from config.settings import TCGPLAYER_SEARCH_API, HEADERS
+try:
+    from curl_cffi import requests
+    HAS_CURL_CFFI = True
+except ImportError:
+    import requests
+    HAS_CURL_CFFI = False
+
 
 def extract_card_number(raw_input: str) -> Dict[str, Any]:
     text = raw_input.strip()
@@ -37,8 +40,10 @@ def fetch_recent_sales(product_id: int) -> Tuple[List[float], Optional[float]]:
         "Sec-Fetch-Site": "same-site"
     }
 
+    extra_args = {"impersonate": "chrome124"} if HAS_CURL_CFFI else {}
+
     try:
-        res = requests.post(url, json=payload, headers=headers, impersonate="chrome124", timeout=4)
+        res = requests.post(url, json=payload, headers=headers, timeout=4, **extra_args)
         if res.status_code == 200:
             sales = res.json().get("data", [])
             prices = []
@@ -97,7 +102,7 @@ def search_card_by_number(card_input: str, one_piece_only: bool = True) -> List[
     }
 
     try:
-        res = requests.post(TCGPLAYER_SEARCH_API, json=payload_term, headers=search_headers, impersonate="chrome124", timeout=10)
+        res = requests.post(TCGPLAYER_SEARCH_API, json=payload_term, headers=search_headers, timeout=10, **extra_args)
         if res.status_code == 200:
             raw_results = res.json().get("results", [{}])[0].get("results", [])
 
@@ -111,7 +116,7 @@ def search_card_by_number(card_input: str, one_piece_only: bool = True) -> List[
                 "query": target_num,
                 "context": {"shippingCountry": "US", "cart": {}}
             }
-            res_ex = requests.post(TCGPLAYER_SEARCH_API, json=payload_extracted, headers=search_headers, impersonate="chrome124", timeout=10)
+            res_ex = requests.post(TCGPLAYER_SEARCH_API, json=payload_extracted, headers=search_headers, timeout=10, **extra_args)
             if res_ex.status_code == 200:
                 raw_results = res_ex.json().get("results", [{}])[0].get("results", [])
 
