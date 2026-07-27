@@ -1,7 +1,12 @@
 import sys
 import os
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+backend_dir = os.path.abspath(os.path.dirname(__file__))
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
 
 import io
 import csv
@@ -11,8 +16,13 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from backend.currency import fetch_usd_to_aud_rate
-from backend.tcgplayer import search_card_by_number
+try:
+    from backend.currency import fetch_usd_to_aud_rate
+    from backend.tcgplayer import search_card_by_number
+except ImportError:
+    from currency import fetch_usd_to_aud_rate
+    from tcgplayer import search_card_by_number
+
 
 app = FastAPI(title="TCG Card Pricing API", version="1.1.0")
 
