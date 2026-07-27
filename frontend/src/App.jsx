@@ -6,7 +6,6 @@ import {
   DollarSign, 
   ExternalLink, 
   Layers, 
-  CheckCircle2, 
   AlertCircle, 
   RefreshCw, 
   Sparkles,
@@ -19,21 +18,30 @@ import {
   RotateCcw,
   FileSpreadsheet,
   Filter,
-  TrendingUp
+  TrendingUp,
+  Cpu,
+  Lock
 } from 'lucide-react';
 
-const API_BASE = "http://localhost:8000/api";
-const CACHE_RESULTS_KEY = "tcg_priced_cards_cache_v2";
-const CACHE_QUEUE_KEY = "tcg_card_queue_cache_v2";
-const CACHE_EXCHANGE_KEY = "tcg_exchange_rate_cache_v2";
+import AuthGuard from './components/AuthGuard';
+import { searchCardClientSide } from './services/tcgplayer';
+import { AUTH_CONFIG } from './config/auth';
 
-export default function App() {
+const LOCAL_API_BASE = "http://localhost:8000/api";
+const CACHE_RESULTS_KEY = "tcg_priced_cards_cache_v3";
+const CACHE_QUEUE_KEY = "tcg_card_queue_cache_v3";
+const CACHE_EXCHANGE_KEY = "tcg_exchange_rate_cache_v3";
+
+function MainDashboard() {
   const [exchangeRate, setExchangeRate] = useState(() => {
     const saved = localStorage.getItem(CACHE_EXCHANGE_KEY);
     return saved ? parseFloat(saved) : 1.52;
   });
   const [exchangeRateLoading, setExchangeRateLoading] = useState(false);
   const [manualRateInput, setManualRateInput] = useState(exchangeRate.toString());
+
+  // Engine Mode: 'client' (Default for GitHub Pages) vs 'backend' (Local Python Proxy)
+  const [useBackendProxy, setUseBackendProxy] = useState(false);
 
   const [onePieceOnly, setOnePieceOnly] = useState(true);
 
@@ -82,12 +90,13 @@ export default function App() {
   const fetchExchangeRate = async () => {
     setExchangeRateLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/exchange-rate`);
+      const res = await fetch("https://open.er-api.com/v6/latest/USD");
       if (res.ok) {
         const data = await res.json();
-        if (data.rate) {
-          setExchangeRate(data.rate);
-          setManualRateInput(data.rate.toString());
+        if (data.rates?.AUD) {
+          const rate = roundDec(data.rates.AUD, 4);
+          setExchangeRate(rate);
+          setManualRateInput(rate.toString());
         }
       }
     } catch (err) {
@@ -101,30 +110,41 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const formData = new FormData();
-    formData.append("file", file);
-
     setStatusMessage("Parsing uploaded CSV file...");
     try {
-      const res = await fetch(`${API_BASE}/parse-csv`, {
-        method: "POST",
-        body: formData,
-      });
+      const text = await file.text();
+      const lines = text.split(/\r?\n/).filter(line => line.trim());
+      if (lines.length === 0) return;
 
-      if (res.ok) {
-        const data = await res.json();
-        if (data.cardNumbers && data.cardNumbers.length > 0) {
-          const newCodes = Array.from(new Set([...cardInputs, ...data.cardNumbers]));
-          setCardInputs(newCodes);
-          setStatusMessage(`Loaded ${data.cardNumbers.length} card numbers from CSV (Total queued: ${newCodes.length}).`);
-        } else {
-          setStatusMessage("No valid card numbers found in uploaded file.");
+      const rows = lines.map(line => line.split(',').map(c => c.replace(/^"|"$/g, '').trim()));
+      const firstRow = rows[0];
+
+      let cardColIdx = 0;
+      for (let idx = 0; idx < firstRow.length; idx++) {
+        const colLower = firstRow[idx].toLowerCase();
+        if (["card", "number", "code", "id", "uid", "sku"].some(k => colLower.includes(k))) {
+          cardColIdx = idx;
+          break;
         }
-      } else {
-        setStatusMessage("Error parsing CSV file.");
       }
+
+      const startRow = ["card", "number", "code", "id", "uid"].some(k => firstRow[cardColIdx].toLowerCase().includes(k)) ? 1 : 0;
+      const extractedCodes = [];
+
+      for (let i = startRow; i < rows.length; i++) {
+        if (rows[i][cardColIdx]) {
+          const val = rows[i][cardColIdx].trim();
+          if (val && !extractedCodes.includes(val)) {
+            extractedCodes.push(val);
+          }
+        }
+      }
+
+      const newQueue = Array.from(new Set([...cardInputs, ...extractedCodes]));
+      setCardInputs(newQueue);
+      setStatusMessage(`Loaded ${extractedCodes.length} card numbers from CSV (Total queued: ${newQueue.length}).`);
     } catch (err) {
-      setStatusMessage("Failed to upload and parse CSV.");
+      setStatusMessage("Failed to parse CSV file.");
     }
   };
 
@@ -151,6 +171,30 @@ export default function App() {
     }
   };
 
+  const handleLogout = () => {
+    sessionStorage.removeItem(AUTH_CONFIG.SESSION_STORAGE_KEY);
+    window.location.reload();
+  };
+
+  const searchCard = async (code) => {
+    if (useBackendProxy) {
+      // Dev Proxy Mode (Local Python FastAPI)
+      const res = await fetch(`${LOCAL_API_BASE}/search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cardNumber: code, onePieceOnly }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.variants || [];
+      }
+      throw new Error("Backend server error");
+    } else {
+      // Standalone Client-Side Direct Engine (GitHub Pages Default)
+      return await searchCardClientSide(code, onePieceOnly);
+    }
+  };
+
   const startPricingProcess = async () => {
     if (cardInputs.length === 0) return;
     setIsProcessing(true);
@@ -165,50 +209,41 @@ export default function App() {
   const processQueue = async (remainingCodes) => {
     for (let idx = 0; idx < remainingCodes.length; idx++) {
       const code = remainingCodes[idx];
-      setStatusMessage(`Searching TCGPlayer & Sales History (${idx + 1}/${remainingCodes.length}): ${code}...`);
+      setStatusMessage(`Searching TCGPlayer (${idx + 1}/${remainingCodes.length}): ${code}...`);
       
       try {
-        const res = await fetch(`${API_BASE}/search`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cardNumber: code, onePieceOnly }),
-        });
+        const variants = await searchCard(code);
 
-        if (res.ok) {
-          const data = await res.json();
-          const variants = data.variants || [];
-
-          if (variants.length === 0) {
-            setSelectedResults(prev => [...prev, {
-              cardNumber: code,
-              productName: "Not Found on TCGPlayer",
-              setName: "N/A",
-              number: code,
-              marketPriceUSD: null,
-              recentSalesUSD: [],
-              averageRecentSalesUSD: null,
-              imageUrl: "",
-              productUrl: `https://www.tcgplayer.com/search/all/product?q=${encodeURIComponent(code)}`,
-              status: "Not Found",
-              allVariants: []
-            }]);
-          } else if (variants.length === 1) {
-            setSelectedResults(prev => [...prev, {
-              ...variants[0],
-              cardNumber: code,
-              status: "Exact Match",
-              allVariants: variants
-            }]);
-          } else {
-            const rest = remainingCodes.slice(idx + 1);
-            setPendingVariants({ 
-              cardNumber: code, 
-              variants, 
-              remainingQueue: rest 
-            });
-            setIsProcessing(false);
-            return;
-          }
+        if (variants.length === 0) {
+          setSelectedResults(prev => [...prev, {
+            cardNumber: code,
+            productName: "Not Found on TCGPlayer",
+            setName: "N/A",
+            number: code,
+            marketPriceUSD: null,
+            recentSalesUSD: [],
+            averageRecentSalesUSD: null,
+            imageUrl: "",
+            productUrl: `https://www.tcgplayer.com/search/all/product?q=${encodeURIComponent(code)}`,
+            status: "Not Found",
+            allVariants: []
+          }]);
+        } else if (variants.length === 1) {
+          setSelectedResults(prev => [...prev, {
+            ...variants[0],
+            cardNumber: code,
+            status: "Exact Match",
+            allVariants: variants
+          }]);
+        } else {
+          const rest = remainingCodes.slice(idx + 1);
+          setPendingVariants({ 
+            cardNumber: code, 
+            variants, 
+            remainingQueue: rest 
+          });
+          setIsProcessing(false);
+          return;
         }
       } catch (err) {
         console.error(`Error searching ${code}:`, err);
@@ -217,7 +252,7 @@ export default function App() {
 
     setIsProcessing(false);
     setPendingVariants(null);
-    setStatusMessage("Pricing complete! All selections and 3-sale averages saved.");
+    setStatusMessage("Pricing complete! Selections & 3-sale averages saved.");
   };
 
   const handleSelectVariant = (selectedVariant) => {
@@ -309,24 +344,16 @@ export default function App() {
     } else {
       setStatusMessage(`Fetching options for ${item.cardNumber}...`);
       try {
-        const res = await fetch(`${API_BASE}/search`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cardNumber: item.cardNumber, onePieceOnly }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const variants = data.variants || [];
-          if (variants.length > 0) {
-            setEditingRowIndex(rowIndex);
-            setPendingVariants({
-              cardNumber: item.cardNumber,
-              variants,
-              remainingQueue: []
-            });
-          } else {
-            alert(`No variants found on TCGPlayer for ${item.cardNumber}.`);
-          }
+        const variants = await searchCard(item.cardNumber);
+        if (variants.length > 0) {
+          setEditingRowIndex(rowIndex);
+          setPendingVariants({
+            cardNumber: item.cardNumber,
+            variants,
+            remainingQueue: []
+          });
+        } else {
+          alert(`No variants found on TCGPlayer for ${item.cardNumber}.`);
         }
       } catch (err) {
         console.error(err);
@@ -419,9 +446,21 @@ export default function App() {
           </div>
         </div>
 
-        {/* Currency Rate Widget & Filters */}
+        {/* Engine Toggle & Currency Widgets */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
           
+          {/* Dev Proxy Mode Toggle */}
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', background: useBackendProxy ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255, 255, 255, 0.04)', padding: '8px 14px', borderRadius: '12px', border: '1px solid var(--border-color)', cursor: 'pointer', fontSize: '0.85rem', color: '#fff' }} title="Toggle between Standalone Client Engine (GH Pages) and Local Python Backend Proxy">
+            <Cpu size={15} color={useBackendProxy ? "var(--primary-accent)" : "var(--text-dim)"} />
+            <span>{useBackendProxy ? "Mode: Python Proxy (Local)" : "Mode: Standalone Client"}</span>
+            <input 
+              type="checkbox" 
+              checked={useBackendProxy} 
+              onChange={(e) => setUseBackendProxy(e.target.checked)} 
+              style={{ accentColor: 'var(--primary-accent)', width: '16px', height: '16px', cursor: 'pointer' }}
+            />
+          </label>
+
           {/* One Piece Only Toggle */}
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255, 255, 255, 0.04)', padding: '8px 14px', borderRadius: '12px', border: '1px solid var(--border-color)', cursor: 'pointer', fontSize: '0.85rem', color: '#fff' }}>
             <Filter size={15} color="var(--primary-accent)" />
@@ -456,23 +495,20 @@ export default function App() {
             </button>
           </div>
 
-          {(selectedResults.length > 0 || cardInputs.length > 0) && (
-            <button 
-              onClick={clearAllSavedData} 
-              className="btn-secondary"
-              title="Clear cached results and start clean"
-              style={{ padding: '8px 14px', fontSize: '0.85rem', borderColor: 'rgba(239, 68, 68, 0.3)', color: '#ef4444' }}
-            >
-              <RotateCcw size={14} /> Clear Cache
-            </button>
-          )}
+          <button 
+            onClick={handleLogout}
+            className="btn-secondary"
+            title="Lock workspace / Logout"
+            style={{ padding: '8px 12px' }}
+          >
+            <Lock size={15} /> Lock
+          </button>
         </div>
       </header>
 
       {/* Main Grid Content */}
       <div style={{ display: 'grid', gridTemplateColumns: '350px 1fr', gap: '24px' }}>
         
-        {/* Left Column: Upload & Queue Management */}
         <aside style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           
           {/* File Upload Box */}
@@ -504,12 +540,10 @@ export default function App() {
               <input type="file" accept=".csv" onChange={handleFileUpload} style={{ display: 'none' }} />
             </label>
 
-            {/* Download Sample CSV Link */}
             <div style={{ textAlign: 'center' }}>
               <a 
-                href={`${API_BASE}/sample-csv`}
-                target="_blank"
-                rel="noreferrer"
+                href="/dash-card-trading/example_card_inputs.csv"
+                download="example_card_inputs.csv"
                 style={{ 
                   color: 'var(--primary-accent)', 
                   fontSize: '0.82rem', 
@@ -625,7 +659,7 @@ export default function App() {
               style={{ width: '100%', marginTop: '18px', justifyContent: 'center' }}
             >
               {isProcessing ? <RefreshCw className="animate-spin" size={18} /> : <Search size={18} />}
-              {isProcessing ? "Fetching Prices & Sales..." : `Fetch Prices (${cardInputs.length})`}
+              {isProcessing ? "Fetching Prices..." : `Fetch Prices (${cardInputs.length})`}
             </button>
           </div>
 
@@ -639,19 +673,30 @@ export default function App() {
             <div>
               <h2 style={{ fontSize: '1.3rem', fontWeight: 600 }}>Priced Cards & Sales History ({selectedResults.length})</h2>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '2px' }}>
-                {statusMessage || "Includes Market Price, 3 Most Recent Purchase Sales, and 3-Sale Average."}
+                {statusMessage || "Market Prices + 3 Most Recent Purchase Sales and Average."}
               </p>
             </div>
 
-            <button 
-              onClick={exportToCSV} 
-              disabled={selectedResults.length === 0}
-              className="btn-secondary"
-              style={{ background: selectedResults.length > 0 ? 'rgba(16, 185, 129, 0.15)' : undefined, borderColor: selectedResults.length > 0 ? 'rgba(16, 185, 129, 0.4)' : undefined }}
-            >
-              <Download size={18} color={selectedResults.length > 0 ? '#10b981' : undefined} />
-              Export CSV (Market, 3 Sales & Avg AUD/USD)
-            </button>
+            <div style={{ display: 'flex', gap: '12px' }}>
+              <button 
+                onClick={clearAllSavedData}
+                className="btn-secondary"
+                title="Clear cached results and start clean"
+                style={{ padding: '8px 12px', fontSize: '0.85rem', borderColor: 'rgba(239, 68, 68, 0.3)', color: '#ef4444' }}
+              >
+                <RotateCcw size={14} /> Clear Cache
+              </button>
+
+              <button 
+                onClick={exportToCSV} 
+                disabled={selectedResults.length === 0}
+                className="btn-secondary"
+                style={{ background: selectedResults.length > 0 ? 'rgba(16, 185, 129, 0.15)' : undefined, borderColor: selectedResults.length > 0 ? 'rgba(16, 185, 129, 0.4)' : undefined }}
+              >
+                <Download size={18} color={selectedResults.length > 0 ? '#10b981' : undefined} />
+                Export CSV (AUD & USD)
+              </button>
+            </div>
           </div>
 
           {/* Results Table */}
@@ -689,7 +734,6 @@ export default function App() {
 
                     return (
                       <tr key={idx}>
-                        {/* Image + Title */}
                         <td>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
                             {item.imageUrl ? (
@@ -718,19 +762,16 @@ export default function App() {
                           </div>
                         </td>
 
-                        {/* Set Name */}
                         <td style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
                           {item.setName}
                         </td>
 
-                        {/* Card Number */}
                         <td>
                           <code style={{ background: '#0f172a', padding: '4px 8px', borderRadius: '4px', fontSize: '0.85rem', color: '#38bdf8' }}>
                             {item.number || item.cardNumber}
                           </code>
                         </td>
 
-                        {/* Market Price USD / AUD */}
                         <td>
                           <div style={{ fontWeight: 700, fontSize: '0.95rem', color: priceUSD !== null ? '#10b981' : 'var(--text-dim)' }}>
                             {priceUSD !== null ? `$${priceUSD.toFixed(2)} USD` : 'N/A'}
@@ -742,7 +783,6 @@ export default function App() {
                           )}
                         </td>
 
-                        {/* 3 Recent Sales */}
                         <td>
                           {recentSales.length > 0 ? (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
@@ -760,7 +800,6 @@ export default function App() {
                           )}
                         </td>
 
-                        {/* 3-Sale Average */}
                         <td>
                           {avgUSD !== null ? (
                             <div>
@@ -778,7 +817,6 @@ export default function App() {
                           )}
                         </td>
 
-                        {/* Actions */}
                         <td>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                             <button 
@@ -835,7 +873,6 @@ export default function App() {
             position: 'relative'
           }}>
             
-            {/* Top Modal Controls */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
@@ -871,7 +908,6 @@ export default function App() {
               </button>
             </div>
 
-            {/* Action Bar */}
             <div style={{ 
               display: 'flex', 
               justify: 'space-between', 
@@ -904,7 +940,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Variant Grid */}
             <div style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
@@ -964,5 +999,17 @@ export default function App() {
       )}
 
     </div>
+  );
+}
+
+function roundDec(val, dec = 2) {
+  return Math.round(val * Math.pow(10, dec)) / Math.pow(10, dec);
+}
+
+export default function App() {
+  return (
+    <AuthGuard>
+      <MainDashboard />
+    </AuthGuard>
   );
 }

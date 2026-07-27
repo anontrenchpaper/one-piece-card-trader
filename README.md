@@ -1,55 +1,74 @@
 # 🃏 TCG Card Pricing Automation App
 
-A modern, interactive web application built with **React** and **FastAPI** to automate TCG card pricing from **TCGPlayer** (including USD to AUD currency conversion, visual variant selection, and CSV batch processing).
+A modern, interactive web application built with **React** and **FastAPI** to automate TCG card pricing from **TCGPlayer** (including USD to AUD currency conversion, 3-sale history averages, passcode authentication, and GitHub Pages static hosting).
 
 ---
 
 ## 🌟 Core Features
 
-- **Card Number UID Lookup**: Search cards using the exact physical card code printed on cards (e.g. `ST30-001`, `OP01-025`, `OP05-119`).
-- **Interactive Visual Variant Selector**: When a single card code has multiple prints (e.g., Base vs. Parallel / Alt-Art / Foil), present visual card thumbnails with set names and prices so you can pick the exact card print.
-- **Live USD ➡️ AUD Currency Conversion**: Automatically fetches live exchange rates from Open Exchange Rates and converts TCGPlayer Market Prices into Australian Dollars (AUD), with an editable conversion control.
-- **CSV Batch Import & Export**: Upload a CSV file containing card codes, process pricing in batch, and export a clean CSV with card names, sets, market prices (USD & AUD), and TCGPlayer product links.
-- **Modern Dark-Mode UI**: Glassmorphic, responsive interface built with modern React.
+- **Card Number UID Lookup**: Search cards using physical card codes (e.g. `OP13-120 SEC`, `ST30-001`, `OP01-025`, `OP05-119`).
+- **Interactive Visual Variant Selector**: Displays high-res artwork, set names, rarities, market prices, and 3-sale averages for multi-print cards.
+- **3 Most Recent Purchase Sales & Average**: Automatically retrieves the 3 most recent transaction prices from TCGPlayer and calculates their 3-sale average.
+- **Live USD ➡️ AUD Currency Engine**: Live currency conversion from Open Exchange Rates into Australian Dollars (AUD).
+- **Passcode Authentication**: Lock screen (`AuthGuard`) protecting the app workspace with SHA-256 hashed passcode verification (default: `card-trading-2026`).
+- **GitHub Pages Ready**: Runs 100% serverlessly on GitHub Pages out-of-the-box using direct browser fetching, with a toggle for local Python backend proxy testing.
+- **CSV Import & Export**: Upload a CSV with card numbers, process prices, and export a clean CSV with market prices, recent sales, averages, and TCGPlayer links.
 
 ---
 
-## 🛠️ Tech Stack & Architecture
+## 📁 Project Structure
 
-- **Frontend**: React + Vite + Lucide Icons + Custom Glassmorphic CSS Design System
-- **Backend**: Python 3 (FastAPI) managed via Astral's `uv` tool
-- **Data Integration**: TCGPlayer Search API (`mp-search-api.tcgplayer.com`)
-- **Currency Engine**: Open Exchange Rate API (`open.er-api.com`)
-
----
-
-## 🚀 Setup & Installation
-
-### 1. Backend Setup (FastAPI)
-
-```bash
-# Navigate to project root
-cd /Users/punjayawickramasinghe/dev/dash-card-trading
-
-# Create virtual environment and install dependencies using uv
-uv venv
-uv pip install fastapi uvicorn httpx python-multipart pydantic
-
-# Run FastAPI server
-uv run uvicorn backend.app:app --reload --port 8000
+```text
+dash-card-trading/
+├── docs/
+│   ├── architecture.md        # Architectural decisions, data flow & search rationale
+│   ├── deployment_gh_pages.md  # Step-by-step GitHub Pages deployment guide
+│   └── authentication.md      # Passcode authentication model & hashing setup
+├── tests/
+│   ├── README.md              # Test suite guide
+│   └── test_fetch.py          # Search API test
+├── frontend/
+│   ├── src/
+│   │   ├── components/
+│   │   │   └── AuthGuard.jsx  # Access protection screen
+│   │   ├── config/
+│   │   │   └── auth.js        # SHA-256 auth configuration
+│   │   └── services/
+│   │       └── tcgplayer.js   # Client-side TCGPlayer & sales engine
+│   └── package.json           # React dependencies & gh-pages scripts
+├── backend/
+│   ├── app.py                 # FastAPI backend server
+│   ├── tcgplayer.py           # Python TCGPlayer scraper module
+│   └── currency.py            # Currency conversion service
+├── example_card_inputs.csv    # Sample CSV reference file
+├── pyrightconfig.json         # Pyright LSP config
+├── gemini.md                  # Project context log
+└── README.md                  # Main documentation
 ```
 
-### 2. Frontend Setup (React UI)
+---
+
+## 🚀 Quick Start & Deployment
+
+### 1. Standalone Web App / GitHub Pages (Zero-Setup for Users)
+
+To deploy to GitHub Pages:
+```bash
+cd frontend
+npm run deploy
+```
+Your live site will be available at `https://<your-username>.github.io/dash-card-trading/`!
+
+### 2. Local Development & Testing
 
 ```bash
-# In another terminal tab, navigate to frontend/
+# Terminal 1: Backend Server
+uv venv
+uv run uvicorn backend.app:app --reload --port 8000
+
+# Terminal 2: Frontend App
 cd frontend
-
-# Install node dependencies
-npm install
-
-# Start Vite development server
 npm run dev
 ```
 
-Open your browser at `http://localhost:5173` to launch the application.
+Passcode for first login: **`card-trading-2026`**
