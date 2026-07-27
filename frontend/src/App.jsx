@@ -27,7 +27,7 @@ import AuthGuard from './components/AuthGuard';
 import { searchCardClientSide } from './services/tcgplayer';
 import { AUTH_CONFIG } from './config/auth';
 
-const LOCAL_API_BASE = "https://one-piece-card-trader-cyan.vercel.app/api";
+const LOCAL_API_BASE = "/api";
 const CACHE_RESULTS_KEY = "tcg_priced_cards_cache_v3";
 const CACHE_QUEUE_KEY = "tcg_card_queue_cache_v3";
 const CACHE_EXCHANGE_KEY = "tcg_exchange_rate_cache_v3";
@@ -40,7 +40,7 @@ function MainDashboard() {
   const [exchangeRateLoading, setExchangeRateLoading] = useState(false);
   const [manualRateInput, setManualRateInput] = useState(exchangeRate.toString());
 
-  // Engine Mode: 'client' vs 'backend' (Vercel Proxy)
+  // Engine Mode defaults to true because we are bundled with the backend
   const [useBackendProxy, setUseBackendProxy] = useState(true);
 
   const [onePieceOnly, setOnePieceOnly] = useState(true);

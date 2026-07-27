@@ -3,8 +3,17 @@ import io
 import csv
 from typing import List, Dict, Any, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import requests
+import os
+
+try:
+    from curl_cffi import requests
+    HAS_CURL_CFFI = True
+except ImportError:
+    import requests
+    HAS_CURL_CFFI = False
+
 from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -67,7 +76,8 @@ def fetch_recent_sales(product_id: int) -> Tuple[List[float], Optional[float]]:
     }
 
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=2.5)
+        extra_args = {"impersonate": "chrome124"} if HAS_CURL_CFFI else {}
+        res = requests.post(url, json=payload, headers=headers, timeout=2.5, **extra_args)
         if res.status_code == 200:
             sales = res.json().get("data", [])
             prices = []
@@ -126,7 +136,8 @@ def search_card_by_number(card_input: str, one_piece_only: bool = True) -> List[
     }
 
     try:
-        res = requests.post(TCGPLAYER_SEARCH_API, json=payload_term, headers=search_headers, timeout=4)
+        extra_args = {"impersonate": "chrome124"} if HAS_CURL_CFFI else {}
+        res = requests.post(TCGPLAYER_SEARCH_API, json=payload_term, headers=search_headers, timeout=4, **extra_args)
         if res.status_code == 200:
             raw_results = res.json().get("results", [{}])[0].get("results", [])
 
@@ -140,7 +151,7 @@ def search_card_by_number(card_input: str, one_piece_only: bool = True) -> List[
                 "query": target_num,
                 "context": {"shippingCountry": "US", "cart": {}}
             }
-            res_ex = requests.post(TCGPLAYER_SEARCH_API, json=payload_extracted, headers=search_headers, timeout=4)
+            res_ex = requests.post(TCGPLAYER_SEARCH_API, json=payload_extracted, headers=search_headers, timeout=4, **extra_args)
             if res_ex.status_code == 200:
                 raw_results = res_ex.json().get("results", [{}])[0].get("results", [])
 
@@ -264,3 +275,8 @@ async def parse_csv(file: UploadFile = File(...)):
                 card_numbers.append(val)
 
     return {"cardNumbers": card_numbers, "totalFound": len(card_numbers)}
+
+# Mount static files at the very end so API routes take precedence
+frontend_dist = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
+if os.path.exists(frontend_dist):
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
