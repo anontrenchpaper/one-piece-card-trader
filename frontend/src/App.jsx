@@ -40,8 +40,8 @@ function MainDashboard() {
   const [exchangeRateLoading, setExchangeRateLoading] = useState(false);
   const [manualRateInput, setManualRateInput] = useState(exchangeRate.toString());
 
-  // Engine Mode: 'client' (Default for GitHub Pages) vs 'backend' (Local Python Proxy)
-  const [useBackendProxy, setUseBackendProxy] = useState(false);
+  // Engine Mode: 'client' vs 'backend' (Vercel Proxy)
+  const [useBackendProxy, setUseBackendProxy] = useState(true);
 
   const [onePieceOnly, setOnePieceOnly] = useState(true);
 
